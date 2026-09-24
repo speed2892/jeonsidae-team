@@ -388,7 +388,7 @@ button{cursor:pointer;font-weight:700}
       <span class="badge">형제 <b id="broCount">0</b>명</span>
       <span class="badge">자매 <b id="sisCount">0</b>명</span>
       <span class="badge">미지정 <b id="unkCount">0</b>명</span>
-      <span class="badge">기준: 1팀 형제 2(충분하면 4)+자매 4 · 24~29명 3팀 · 30명↑ 4팀</span>
+      <span class="badge">기준: 1팀 6명(형제 2+자매 4) · 부족한 쪽은 남은 인원으로 채워 전원 배정</span>
     </div>
   </section>
 
@@ -674,67 +674,56 @@ function assignTeams(){
 
   const totalBrothers = carBrothers.length + otherBrothers.length;
   const totalSisters = carSisters.length + otherSisters.length;
-  const totalCount = sel.length;
 
-  // 인원 수에 따른 팀 수 결정: 24~29명 3팀, 30명 이상 4팀, 그 외에는 기존 방식(형제 2명·자매 4명 기준)
-  let teamCount;
-  if(totalCount >= 30){
-    teamCount = 4;
-  } else if(totalCount >= 24){
-    teamCount = 3;
-  } else {
-    teamCount = Math.min(Math.floor(totalBrothers/2), Math.floor(totalSisters/4));
-  }
-
-  // 자매는 팀당 4명이 기본. 형제는 팀 수 × 4명을 채울 만큼 충분하면 팀당 4명, 부족하면 2명.
-  const sistersPerTeam = 4;
-  const brothersPerTeam = (totalBrothers >= teamCount * 4) ? 4 : 2;
-
-  // 실제 인원으로 채울 수 있는 팀 수를 넘지 않도록 보정
-  const maxTeamsByBrothers = brothersPerTeam > 0 ? Math.floor(totalBrothers / brothersPerTeam) : 0;
-  const maxTeamsBySisters = Math.floor(totalSisters / sistersPerTeam);
-  const fullCount = Math.max(0, Math.min(teamCount, maxTeamsByBrothers, maxTeamsBySisters));
+  // 팀당 목표 인원 6명(기본 형제2+자매4). 한쪽이 부족하면 다른 쪽으로 채우고,
+  // 마지막에 1~2명만 남으면 직전 팀에 합쳐서 아무도 미배정으로 남지 않도록 함.
+  const TEAM_SIZE = 6;
   const teams=[];
 
-  for(let t=0;t<fullCount;t++){
-    const team=[];
-
-    // 1) 자동차 보유 형제 1명 우선
-    let p = takeBest(carBrothers, team, pairCounts);
-    if(!p) p = takeBest(otherBrothers, team, pairCounts);
-    if(p) team.push(p);
-
-    // 2) 나머지 형제 (형제 인원이 충분하면 팀당 최대 4명까지)
-    const remainingBrothersNeeded = brothersPerTeam - team.filter(x=>x.gender==="brother").length;
-    for(let i=0;i<remainingBrothersNeeded;i++){
-      let best = null, bestPool = null, bestIndex = -1, bestCost = Infinity;
-      [[carBrothers,"car"],[otherBrothers,"other"]].forEach(([pool,label])=>{
+  function pickInto(team, count, carPool, otherPool){
+    for(let i=0;i<count;i++){
+      let bestPool = null, bestIndex = -1, bestCost = Infinity;
+      [carPool, otherPool].forEach(pool=>{
         pool.forEach((cand,idx)=>{
           const c=addCost(cand,team,pairCounts);
-          if(c<bestCost){ best=cand; bestPool=pool; bestIndex=idx; bestCost=c; }
-        });
-      });
-      if(bestPool){ team.push(bestPool.splice(bestIndex,1)[0]); }
-    }
-
-    // 3) 자동차 보유 자매 1명 우선
-    p = takeBest(carSisters, team, pairCounts);
-    if(!p) p = takeBest(otherSisters, team, pairCounts);
-    if(p) team.push(p);
-
-    // 4) 나머지 자매 (팀당 4명이 되도록)
-    const remainingSistersNeeded = sistersPerTeam - team.filter(x=>x.gender==="sister").length;
-    for(let i=0;i<remainingSistersNeeded;i++){
-      let best = null, bestPool = null, bestIndex = -1, bestCost = Infinity;
-      [[carSisters,"car"],[otherSisters,"other"]].forEach(([pool,label])=>{
-        pool.forEach((cand,idx)=>{
-          const c=addCost(cand,team,pairCounts);
-          if(c<bestCost){ best=cand; bestPool=pool; bestIndex=idx; bestCost=c; }
+          if(c<bestCost){ bestPool=pool; bestIndex=idx; bestCost=c; }
         });
       });
       if(bestPool) team.push(bestPool.splice(bestIndex,1)[0]);
     }
+  }
 
+  while(true){
+    const sis = carSisters.length + otherSisters.length;
+    const bro = carBrothers.length + otherBrothers.length;
+    if(sis === 0 && bro === 0) break;
+
+    let siTake, brTake;
+    if(sis >= 4 && bro >= 2){
+      siTake = 4; brTake = 2;
+    } else if(sis < 4){
+      // 자매가 부족하면 있는 자매를 모두 쓰고, 형제로 목표 인원까지 채움
+      siTake = sis;
+      brTake = Math.min(bro, TEAM_SIZE - siTake);
+    } else {
+      // 형제가 부족하면 있는 형제를 모두 쓰고, 자매로 목표 인원까지 채움
+      brTake = bro;
+      siTake = Math.min(sis, TEAM_SIZE - brTake);
+    }
+
+    // 이번 팀을 만들고 나서 남는 인원이 1~2명뿐이면, 따로 팀을 만들지 않고 지금 팀에 합침
+    const remainSis = sis - siTake, remainBro = bro - brTake;
+    if(remainSis + remainBro > 0 && remainSis + remainBro <= 2){
+      siTake += remainSis;
+      brTake += remainBro;
+    }
+
+    if(siTake + brTake === 0) break;
+
+    const team=[];
+    pickInto(team, brTake, carBrothers, otherBrothers);
+    pickInto(team, siTake, carSisters, otherSisters);
+    if(team.length===0) break;
     teams.push(team);
   }
 
